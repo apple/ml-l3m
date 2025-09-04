@@ -1,0 +1,218 @@
+constants:
+  embed_dim: 1024
+  num_blocks: 24
+  num_heads: 8
+  img_size: 224
+  num_patches: 196
+  patch_size: 16
+
+data:
+  data_set: imagenet
+  nb_classes: 1000
+  train:
+    dataset:
+      _target_: l3m.data.vision.datasets.image_folder.CustomImageFolder
+      root: /mnt/data/imagenet/train
+      transform:
+        _target_: torchvision.transforms.Compose
+        transforms:
+        - _target_: torchvision.transforms.RandomResizedCrop
+          size: 224
+          scale: [0.4, 1.0]
+          interpolation: 3       # bicubic
+        - _target_: torchvision.transforms.RandomHorizontalFlip
+        - _target_: torchvision.transforms.RandomApply
+          p: 0.8
+          transforms:
+          - _target_: torchvision.transforms.ColorJitter
+            brightness: 0.4
+            contrast: 0.4
+            saturation: 0.2
+            hue: 0.1
+        - _target_: torchvision.transforms.ToTensor
+        - _target_: torchvision.transforms.Normalize
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: 512
+      num_workers: 10
+      pin_memory: true
+      drop_last: true
+    collator:
+      _target_: l3m.data.vision.collators.mixup_collator.MixupCollator
+      # Needs to be set explicitly to false, otherwise it will inherit
+      #`partial=true` from default.yaml
+      _partial_: false
+      mixup_fn:
+        _target_: timm.data.Mixup
+        mixup_alpha: 0.8
+        cutmix_alpha: 1.0
+        cutmix_minmax:
+        prob: 1.0
+        switch_prob: 0.5
+        mode: batch
+        label_smoothing: 0.1
+        num_classes: ${data.nb_classes}
+  validation:
+    dataset:
+      _target_: l3m.data.vision.datasets.image_folder.CustomImageFolder
+      root: /mnt/data/imagenet/val
+      transform:
+        _target_: torchvision.transforms.Compose
+        transforms:
+        - _target_: torchvision.transforms.Resize
+          size: 256      # crop ratio = 0.875
+          interpolation: 3
+        - _target_: torchvision.transforms.CenterCrop
+          size: ${constants.img_size}
+        - _target_: torchvision.transforms.ToTensor
+        - _target_: torchvision.transforms.Normalize
+          mean: [0.485, 0.456, 0.406]
+          std: [0.229, 0.224, 0.225]
+      target_transform:
+        _target_: l3m.data.vision.datasets.image_folder.one_hot
+        _partial_: true
+        num_classes: ${data.nb_classes}
+
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: 512
+      num_workers: 10
+      pin_memory: true
+      drop_last: false
+
+optim:
+  grad_clip: 1.0
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 1e-3
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1e-08
+    weight_decay: 0.05
+    fused: true
+  wd_exclude:
+  - '*bias*'
+  - '*cls_token*'
+  - '*pos_embed*'
+  - '*norm*'
+  - '*gamma*'
+  scheduler:
+    _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+    schedulers:
+    - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+      start_value: 1e-7
+      end_value: ${optim.optimizer.lr}
+    - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      start_value: ${optim.optimizer.lr}
+      end_value: 1e-5
+    interval_scaling:
+    - rescaled
+    - rescaled
+    lengths:
+    - 0.016
+    - 0.984
+model:
+  checkpoint:       # Add path for finetuning
+  meta_model:
+    _target_: l3m.model.meta_models.MetaModel
+    preprocessor:
+      _target_: l3m.model.preprocessors.vision.ViTPreprocessor
+      read_key: image
+      write_key: image_tokens
+      patchifier:
+        _target_: l3m.model.preprocessors.vision.PatchEmbed
+        img_size: ${constants.img_size}
+        patch_size: ${constants.patch_size}
+        in_chans: 3
+        embed_dim: ${constants.embed_dim}
+        # norm_layer:
+        #   _target_: l3m.model.layers.normalization.LayerNormFP32
+        #   _partial_: true
+        #   eps: 1e-5
+      pos_embed_type: absolute
+      drop_patches: false
+      cls_token: true
+    trunk:
+      _target_: l3m.model.trunks.transformer.Transformer
+      read_key: image_tokens
+      write_key: image_tokens
+      embed_dim: ${constants.embed_dim}
+      num_blocks: ${constants.num_blocks}
+      drop_path_rate: 0.0
+      drop_path_type: uniform
+      mlp_ratio: 4
+      attn_target:
+        _target_: l3m.model.layers.attention.GenericAttention
+        _partial_: true
+        dim: ${constants.embed_dim}
+        num_heads: ${constants.num_heads}
+        qkv_bias: true
+      weight_init_style: xavier_uniform
+      post_trunk_norm: true
+      use_bias: false
+    postprocessor:
+      _target_: l3m.model.postprocessors.select.ExtractCLS
+      read_key: image_tokens
+      write_key: image_embed
+      index: 0
+    head:
+      _target_: l3m.model.heads.classifier.LinearClassifier
+      read_key: image_embed
+      write_key: image_logits
+      in_features: ${constants.embed_dim}
+      out_features: ${data.nb_classes}
+      use_layernorm: true
+      weight_init_style: trunc_normal
+
+loss:
+  _target_: l3m.loss.wrappers.LossWrapper
+  read_key: image_logits
+  base_criterion:
+    _target_: timm.loss.SoftTargetCrossEntropy
+
+metrics:
+  _target_: l3m.metrics.MetricsComputer
+  metrics:
+  - _target_: l3m.metrics.accuracy.Accuracy
+    read_key: image_logits
+    topk: [1, 5, 10, 100]
+
+wandb:
+  use_wandb: true
+  watch_freq: true
+  project: l3m
+  tags: [supervised, imagenet]
+
+experiment:
+  start_iteration: 0
+  total_iterations: 32000
+  ckpt_save_freq: 5000
+  test_frequency: 300
+  torch_compile: true
+  dtype: bfloat16
+  output_dir:
+  device: cuda
+  find_unused_parameters: false
+  seed: 0
+  dist_eval: false
+  distributed: false  # will be automatically enabled
+  world_size: 1  # will be automatically updated
+  dist_url: env://
+  eval: false
+  resume:       # Should be populated with a ckpt path on job resubmission
+  fsdp:
+    sharding_strategy: FULL_SHARD
+    param_dtype: bf16
+    reduce_dtype: bf16
+    buffer_dtype: fp32
+    fsdp_activation_checkpointing: false
+    shard_template:
+    - trunk.blocks
+    activation_checkpoint_template:
+    - trunk.blocks

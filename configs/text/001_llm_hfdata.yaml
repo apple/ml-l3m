@@ -1,0 +1,149 @@
+constants:
+  embed_dim: 2048
+  vocab_size: 50432 # GPT-NeoX Tokenizer
+  context_length: 2048
+
+  # hf dataset
+  tokenizer:
+    _target_: l3m.model.layers.tokenizers.HFTokenizer
+    tokenizer_name: google/siglip-base-patch16-224
+    context_length: ${constants.context_length}
+    max_seq_len: ${constants.context_length}
+
+data:
+  data_set:
+  data_path:
+  train:
+    dataset:
+      _target_: l3m.data.huggingface.text.SimpleTextDataset
+      tokenizer: ${constants.tokenizer}
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: 16
+      num_workers: 4
+
+optim:
+  grad_clip: 1.0
+  gradient_accumulation_steps: 2
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 5e-4
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1e-08
+    weight_decay: 0.1
+    fused: true
+  wd_exclude:
+  - '*bias*'
+  - '*pos_embed*'
+  - '*norm*'
+  scheduler:
+    _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+    schedulers:
+    - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+      start_value: 1e-6
+      end_value: ${optim.optimizer.lr}
+    - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      start_value: ${optim.optimizer.lr}
+      end_value: 5e-5
+    interval_scaling:
+    - rescaled
+    - rescaled
+    lengths:
+    - 0.1
+    - 0.9
+
+model:
+  model_ema: false
+  meta_model:
+    _target_: l3m.model.meta_models.MetaModel
+    preprocessor:
+      _target_: l3m.model.preprocessors.text.TextPreprocessor
+      read_key: text
+      write_key: text_tokens
+      embed_dim: ${constants.embed_dim}
+      vocab_size: ${constants.vocab_size}
+      context_length: ${constants.context_length}
+      pos_embed_type: sincos  # Replace with RoPE
+      init_style: uniform # Following Edouard's implementation
+    trunk:
+      _target_: l3m.model.trunks.transformer.Transformer
+      read_key: text_tokens
+      write_key: text_tokens
+      embed_dim: ${constants.embed_dim}
+      num_blocks: 24
+      mlp_ratio: 4
+      ffn_target:
+        _target_: l3m.model.layers.ffn.SwiGLUFFN
+        _partial_: true
+      norm_layer:
+        _target_: l3m.model.layers.normalization.LayerNormFP32
+        _partial_: true
+        eps: 1e-5
+      attn_target:
+        _target_: l3m.model.layers.attention.EfficientAttention
+        _partial_: true
+        dim: ${constants.embed_dim}
+        num_heads: 16
+        qkv_bias: false
+        is_causal: true
+      weight_init_style: fan_in_depth_scaled # Following Edouard's implementation
+      post_trunk_norm: true
+      use_bias: false
+    postprocessor:
+      _target_: torch.nn.Identity
+    head:
+      _target_: l3m.model.heads.classifier.LinearClassifier
+      read_key: text_tokens
+      write_key: text_tokens
+      in_features: ${constants.embed_dim}
+      out_features: ${constants.vocab_size}
+      weight_init_style: fan_in_depth_scaled  # Following Edouard's implementation
+      encoder_num_blocks: ${model.meta_model.trunk.num_blocks}
+      use_bias: false # Following Edouard's implementation
+
+loss:
+  _target_: l3m.loss.llm_cross_entropy_loss.LLMCrossEntropyLoss
+  read_key: text_tokens
+
+wandb:
+  use_wandb: true
+  watch_freq:
+  project: l3m
+  tags: [llm]
+
+experiment:
+  start_iteration: 0
+  total_iterations: 55_000
+  ckpt_save_freq: 10_000
+  test_frequency: 55_000
+  torch_compile: false # Works with ViTAttention but not EffAttention (i.e.FlashAttention). At the moment the gains from EffAttention are much more significant.
+  dtype: bfloat16
+  output_dir:
+  device: cuda
+  find_unused_parameters: false
+  seed: 0
+  dist_eval: false
+  distributed: false  # will be automatically enabled
+  world_size: 1  # will be automatically updated
+  dist_url: env://
+  eval: false
+  resume:       # Should be populated with a ckpt path on job resubmission
+  amp_enabled: true
+  fsdp:
+    sharding_strategy: SHARD_GRAD_OP
+    param_dtype: bf16
+    reduce_dtype: bf16
+    buffer_dtype: fp32
+    fsdp_activation_checkpointing: true
+    fsdp_layers_to_wrap:
+    - Block
+    - LinearClassifier
+    - Embedding
+    fsdp_layers_to_activation_checkpoint:
+    - SwiGLUFFN
+    fsdp_ignored_modules:
+    - ''

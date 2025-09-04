@@ -1,0 +1,352 @@
+constants:
+  # ========== VISION ==========
+  vision_embed_dim: 768
+  vision_num_blocks: 12
+  vision_num_heads: 6
+  # ========== MoE ==========
+  num_experts: 4
+  top_k: 1 #2 1
+  load_balancing_loss_weight: 0.01
+  # ========== TEXT ==========
+  text_embed_dim: 1024
+  text_num_blocks: 12
+  text_num_heads: 8
+  # ========== AIM ==========
+  prefix_range: [1, 255]
+  # ========== LOSS ==========
+  criteria_weights: [0.4, 1.0, 1]
+  val_criteria_weights: [0.4, 1.0]
+  # ========== DATA ==========
+  context_length: 77
+  text_vocab_size: 32000
+  img_size: 224
+  batch_size_per_gpu: 512
+  patch_size: 14
+  num_patches: 256
+  seed: 0
+  # ========== TOKENIZER ==========
+  pad_token: 1
+  tokenizer:
+    _target_: l3m.model.layers.tokenizers.HFTokenizer
+    tokenizer_name: google/siglip-base-patch16-224
+    context_length: ${constants.context_length}
+    max_seq_len: ${constants.context_length}
+  # ========== TRANSFORMS ==========
+  train_transform:
+    _target_: torchvision.transforms.Compose
+    transforms:
+    - _target_: torchvision.transforms.RandomResizedCrop
+      size: ${constants.img_size}
+      scale: [0.4, 1.0]
+      interpolation: 3   # bicubic
+    - _target_: torchvision.transforms.RandomHorizontalFlip
+    - _target_: torchvision.transforms.ToTensor
+    - _target_: torchvision.transforms.Normalize
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+  # ========== GENERATORS ==========
+  train_generators:
+  - _target_: l3m.helpers.vision.mask_generator.RandomRasterMasking
+    write_key: encoder_prefix_mask
+    num_patches: ${constants.num_patches}
+    prefix_range: ${constants.prefix_range}
+  eval_generators:
+  - _target_: l3m.helpers.vision.mask_generator.RandomRasterMasking
+    write_key: encoder_prefix_mask
+    num_patches: ${constants.num_patches}
+    force_full_attn: true
+
+# ==============================================================
+# DATA
+# ==============================================================
+data:
+  # ========== TRAIN ==========
+  train:
+    dataset:
+      _target_: l3m.data.huggingface.multimodal.SimpleImageTextDataset
+      tokenizer: ${constants.tokenizer}
+      transforms: ${constants.train_transform}
+      generators: ${constants.train_generators}
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: ${constants.batch_size_per_gpu}
+      num_workers: 4
+  # ========== VALIDATION ==========
+  validation:
+    dataset:
+      _target_: l3m.data.huggingface.multimodal.SimpleImageTextDataset
+      tokenizer: ${constants.tokenizer}
+      transforms: ${constants.train_transform}
+      generators: ${constants.eval_generators}
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: ${constants.batch_size_per_gpu}
+      num_workers: 4
+
+# ==============================================================
+# OPTIM
+# ==============================================================
+optim:
+  grad_clip: 1.0
+  gradient_accumulation_steps: 4
+  optimizer:
+    _target_: l3m.optim.adamw_lh.AdamLH
+    _partial_: true
+    lr: 2e-3
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1e-08
+    weight_decay: 1e-4
+  wd_exclude:
+  - '*bias*'
+  - '*pos_embed*'
+  - '*norm*'
+  - '*logit_scale*'
+  - '*cls_token*'
+  - '*positional_embedding*'
+  scheduler:
+    _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+    schedulers:
+    - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+      start_value: 1e-6
+      end_value: ${optim.optimizer.lr}
+    - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+      start_value: ${optim.optimizer.lr}
+      end_value: 1e-5
+    absolute_lengths: true
+    interval_scaling:
+    - rescaled
+    - rescaled
+    lengths:
+    - 12_500
+    - 237_500
+
+# ==============================================================
+# MODEL
+# ==============================================================
+model:
+  checkpoint:
+  meta_model:
+    _target_: l3m.model.meta_models.InSeriesMetaModels
+    models:
+      # ========== IMAGE ENCODER ==========
+      image_encoder:
+        _target_: l3m.model.meta_models.MetaModel
+        preprocessor:
+          _target_: l3m.model.utils.MultiBlock
+          blocks:
+          - _target_: l3m.model.preprocessors.vision.ViTPreprocessor
+            read_key: image
+            write_key: image_tokens
+            patchifier:
+              _target_: l3m.model.preprocessors.vision.PatchEmbed
+              img_size: ${constants.img_size}
+              patch_size: ${constants.patch_size}
+              in_chans: 3
+              embed_dim: ${constants.vision_embed_dim}
+              norm_layer:
+                _target_: l3m.model.layers.normalization.RMSNorm
+                _partial_: true
+                eps: 1e-5
+            pos_embed_type: absolute
+            drop_patches: false
+            cls_token: false
+          - _target_: l3m.model.preprocessors.mask_builders.PrefixAttentionMaskBuilder
+            read_key: encoder_prefix_mask
+            write_key: encoder_prefix_attn_mask
+            seq_len: ${constants.num_patches}
+            cls_token: false
+        trunk:
+          _target_: l3m.model.trunks.transformer.Transformer
+          read_key: image_tokens
+          write_key: image_tokens
+          self_attn_mask_read_key: encoder_prefix_attn_mask
+          embed_dim: ${constants.vision_embed_dim}
+          num_blocks: ${constants.vision_num_blocks}
+          mlp_ratio: 4
+          ffn_target:
+            _target_: l3m.model.layers.moe.MoE
+            _partial_: true
+            return_bias: false
+            moe_class: dmoe
+            num_experts: ${constants.num_experts}
+            top_k: ${constants.top_k}
+            normalize_expert_weights: 0.0
+            uniform_expert_assignment: false
+            load_balancing_loss_weight: ${constants.load_balancing_loss_weight}
+            capacity_factor: 0
+            router_jitter_eps: 0.0
+            mlp_type: glu
+            mlp_impl: grouped
+            act_layer: nn.SiLU
+            memory_optimized_mlp: true
+            multiple_of: 256
+            num_layers: ${constants.vision_num_blocks}
+            moe_weight_parallelism: false # not supported with GLU
+            moe_expert_model_parallelism: false #false
+            init_method:
+              _target_: torch.nn.init.normal_
+              _partial_: true
+              std: 0.02
+          norm_layer:
+            _target_: l3m.model.layers.normalization.RMSNorm
+            _partial_: true
+            eps: 1e-5
+          attn_target:
+            _target_: l3m.model.layers.attention.AttentionWithMask
+            _partial_: true
+            dim: ${constants.vision_embed_dim}
+            num_heads: ${constants.vision_num_heads}
+            qkv_bias: false
+          weight_init_style: xavier_uniform
+          post_trunk_norm: true
+          use_bias: false
+        postprocessor:
+          _target_: torch.nn.Identity
+        head:
+          _target_: torch.nn.Identity
+      # ========== TEXT DECODER ==========
+      text_decoder:
+        _target_: l3m.model.meta_models.MetaModel
+        preprocessor:
+          _target_: l3m.model.preprocessors.multimodal.VisionAndTextPreprocessor
+          text_read_key: text_tokens
+          vision_read_key: projected_image_tokens
+          write_key: vision_text_tokens
+          text_preprocessor:
+            _target_: l3m.model.preprocessors.vision.TextPreprocessor
+            read_key: text
+            write_key: text_tokens
+            inference_read_key: prompt
+            vocab_size: ${constants.text_vocab_size}
+            embed_dim: ${constants.text_embed_dim}
+            context_length: ${constants.context_length}
+            cls_token: true
+          vision_preprocessor:
+            _target_: l3m.model.meta_models.GenericBlock
+            read_key: image_tokens
+            write_key: projected_image_tokens
+            module:
+              _target_: torch.nn.Linear
+              in_features: ${constants.vision_embed_dim}
+              out_features: ${constants.text_embed_dim}
+        trunk:
+          _target_: l3m.model.trunks.transformer.Transformer
+          read_key: vision_text_tokens
+          write_key: vision_text_tokens
+          embed_dim: ${constants.text_embed_dim}
+          num_blocks: ${constants.text_num_blocks}
+          mlp_ratio: 4
+          norm_layer:
+            _target_: l3m.model.layers.normalization.RMSNorm
+            _partial_: true
+            eps: 1e-5
+          ffn_target:
+            _target_: l3m.model.layers.ffn.SwiGLUFFN
+            _partial_: true
+          attn_target:
+            _target_: l3m.model.layers.attention.EfficientAttention
+            _partial_: true
+            dim: ${constants.text_embed_dim}
+            num_heads: ${constants.text_num_heads}
+            qkv_bias: false
+            is_causal: true
+          weight_init_style: xavier_uniform
+          post_trunk_norm: true
+          use_bias: false
+        postprocessor:
+          _target_: l3m.model.utils.MultiBlock
+          blocks:
+          - _target_: l3m.model.postprocessors.select.SelectTokens
+            read_key: vision_text_tokens
+            write_key: text_tokens
+            start: ${constants.num_patches}
+          - _target_: l3m.model.postprocessors.select.SelectTokens
+            read_key: vision_text_tokens
+            write_key: image_tokens
+            start: 0
+            end: ${constants.num_patches}
+        head:
+          _target_: l3m.model.utils.MultiBlock
+          blocks:
+          - _target_: l3m.model.heads.classifier.LinearClassifier
+            read_key: text_tokens
+            write_key: text_tokens
+            in_features: ${constants.text_embed_dim}
+            out_features: ${constants.text_vocab_size}
+            weight_init_style: fan_in_depth_scaled
+            encoder_num_blocks: ${constants.text_num_blocks}
+            use_bias: false
+          - _target_: l3m.model.heads.classifier.LinearClassifier
+            read_key: image_tokens
+            write_key: image_preds
+            in_features: ${constants.text_embed_dim}
+            out_features: 588
+            weight_init_style: fan_in_depth_scaled
+            encoder_num_blocks: ${constants.text_num_blocks}
+            use_bias: false
+
+# ==============================================================
+# LOSS
+# ==============================================================
+loss:
+  _target_: l3m.loss.wrappers.MultiLossWrapper
+  criteria_weights: ${constants.criteria_weights}
+  criteria:
+  - _target_: l3m.loss.mae_loss.RasterPixelLoss
+    read_key: image_preds
+    norm_pix_loss: true
+    mask_read_key: encoder_prefix_mask
+    patch_size: ${constants.patch_size}
+  - _target_: l3m.loss.llm_cross_entropy_loss.LLMCrossEntropyLoss
+    read_key: text_tokens
+    shift_target: false
+    ignore_index: ${constants.pad_token}
+  - _target_: l3m.loss.moe_balancing_loss.MoEBalancingLoss
+
+# ==============================================================
+# EXPERIMENT
+# ==============================================================
+experiment:
+  start_iteration: 0
+  total_iterations: 250_000
+  ckpt_save_freq: 10_000
+  test_frequency: 10_000
+  torch_compile: true
+  dtype: bfloat16
+  output_dir:
+  device: cuda
+  find_unused_parameters: false
+  seed: ${constants.seed}
+  dist_eval: true
+  distributed: false  # will be automatically enabled
+  world_size: 1  # will be automatically updated
+  dist_url: env://
+  eval: false
+  resume:     # Should be populated with a ckpt path on job resubmission
+  amp_enabled: true
+  no_sync_gradient_accumulation: true
+  nccl_timeout_mins: 80
+  fsdp:
+    sharding_strategy: NO_SHARD
+    param_dtype: bf16
+    reduce_dtype: bf16
+    buffer_dtype: fp32
+    fsdp_activation_checkpointing: false
+    fsdp_layers_to_wrap:
+    - Block
+    - DecoderBlock
+    fsdp_layers_to_activation_checkpoint:
+    - Block
+    - DecoderBlock
+    fsdp_ignored_modules:
+    - ''
+
+wandb:
+  use_wandb: true
+  watch_freq: 500
+  project: l3m
+  tags: [aimv2, moe]

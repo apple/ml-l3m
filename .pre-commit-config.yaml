@@ -1,0 +1,28 @@
+fail_fast: false
+default_language_version:
+  python: python3
+default_stages:
+- pre-commit
+- pre-push
+minimum_pre_commit_version: 4.0.0
+repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.7
+  hooks:
+  - id: ruff
+    types_or: [python, pyi]
+    args: [--fix]
+  - id: ruff-format
+    types_or: [python, pyi]
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.15.0
+  hooks:
+  - id: pretty-format-yaml
+    args: [--autofix, --indent, '2']
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+  - id: check-ast
+  - id: check-toml
+  - id: end-of-file-fixer
+  - id: trailing-whitespace

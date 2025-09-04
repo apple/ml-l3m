@@ -1,0 +1,84 @@
+constants:
+  embed_dim: 1024
+  img_size: 224
+
+data:
+  data_set: imagenet
+  data_path:
+  nb_classes: 1000
+  eval_crop_ratio: 0.875
+  generation_kwargs:
+  tokenizer:
+  validation_tokenizer:
+  train:
+    shuffle: true
+    dataset:
+    dataloader:
+      _target_: torch.utils.data.DataLoader
+      _partial_: true
+      batch_size: 64
+      num_workers: 10
+      pin_memory: true
+      drop_last: true
+    collator:
+      _target_: torch.utils.data.default_collate
+      _partial_: true
+  validation:
+
+optim:
+  grad_clip:
+  lr_scalers:
+  gradient_accumulation_steps: 1
+  lr_decay:
+  freeze_list:
+  unfreeze_list:
+  probe_hparam_search: false
+  scheduler_type: fvcore
+  scheduler:
+
+model:
+  modality:
+  checkpoint:       # Add path for finetuning
+  checkpoint_filters:
+  checkpoint_renamer:
+  meta_model:
+
+loss:
+
+val_loss:
+
+metrics:
+  _target_: l3m.metrics.MetricsComputer # Empty list of metrics
+
+wandb:
+  use_wandb: false
+  wandb_config: ./.wandb.yaml
+  watch_freq:
+  project: l3m
+
+experiment:
+  test_frequency: 2000
+  torch_compile: false
+  dtype: bfloat16
+  output_dir:
+  shared_dir:
+  device: cuda
+  ignore_resume_iteration: false
+  find_unused_parameters: false
+  seed: 0
+  ckpt_save_freq: 1000
+  start_iteration: 0
+  dist_eval: true
+  distributed: false
+  world_size: 1
+  dist_url: env://
+  nccl_timeout_mins: 30
+  eval: false
+  resume:
+  no_sync_gradient_accumulation: false
+  amp_enabled: true
+  fsdp:
+    sharding_strategy: FULL_SHARD
+    param_dtype: bf16
+    reduce_dtype: bf16
+    buffer_dtype: fp32

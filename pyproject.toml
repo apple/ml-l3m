@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l3m"
+version = "1.0.0"
+description = "Large Multi-Modal Models (core pre-training)"
+requires-python = ">=3.10"
+readme = {file = "README.md", content-type = "text/markdown"}
+license = {file = "LICENSE"}
+authors = [{name = "Apple"}]
+dependencies = [
+    "torch>=2.7.0",
+    "numpy",
+    "timm",
+    "hydra-core",
+    "wandb",
+    "ftfy",
+    "regex",
+    "sentencepiece",
+    "transformers",
+    "tokenizers",
+    "datasets",
+    "fvcore",
+]
+
+[project.optional-dependencies]
+docs = [
+    "sphinx>=4.0",
+    "sphinx_autodoc_typehints>=1.12.0",
+    "sphinx-book-theme",
+]
+extra = [
+    "megablocks[gg]==0.10.0",
+]
+
+[tool.ruff]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "docs/_build",
+]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort (import sorting)
+    "Q",    # flake8-quotes
+    "TID",  # flake8-tidy-imports
+    "NPY",  # NumPy-specific rules
+    "PT",   # flake8-pytest-style
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "BLE",  # flake8-blind-except
+    "T20",  # flake8-print
+]
+fixable = ["ALL"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
