@@ -10,7 +10,10 @@ This makes reproducibility a first-class citizen, as it is easy to share configs
 abstracted as possible from the general user. It also offers significant flexibility, making it easy to combine
 different "building blocks" in a lego-like fashion.
 
-It is mainly been used to train AIMv1 and AIMv2, but it can be used for training any type of model.
+It was used in the following papers, but it can be used for training any type of model:
+- **Scaling Laws for Native Multimodal Models**: [`Scaling Laws for Native Multimodal Models`](https://arxiv.org/abs/2504.07951) [**ICCV 2025 - Oral**] <br>
+  Mustafa Shukor, Enrico Fini, Victor Guilherme Turrisi da Costa, Matthieu Cord, Joshua Susskind, Alaaeldin El-Nouby.
+
 - **AIMv2**: [`Multimodal Autoregressive Pre-training of Large Vision Encoders`](https://arxiv.org/abs/2411.14402) [**CVPR 2025 - Highlight**]<br>
   Enrico Fini*, Mustafa Shukor*, Xiujun Li, Philipp Dufter, Michal Klein, David Haldimann, Sai Aitharaju,
   Victor Guilherme Turrisi da Costa, Louis Béthune, Zhe Gan, Alexander T Toshev, Marcin Eichner, Moin Nabi,
@@ -168,3 +171,6 @@ To use wandb, `.wandb.yaml` must be present in the root of the project containin
 
 ## License
 Please check out the repository [LICENSE](LICENSE) before using the provided code and models.
+
+## Acknowledgements
+Please check the [ACKNOWLEDGEMENTS](ACKNOWLEDGEMENTS) file. Also, this repository was inspired by the design of [Omnivore](https://github.com/facebookresearch/omnivore).
